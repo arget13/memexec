@@ -256,9 +256,7 @@ int main()
                          "jmp *%1;"
                          : : "r"(sp), "r"(ldentry));
             #elif defined(__aarch64__)
-            asm volatile("mov x0, sp;"
-                         "sub sp, sp, x0;"
-                         "add sp, sp, %0;"
+            asm volatile("mov sp, %0;"
                          "br  %1;"
                          : : "r"(sp), "r"(ldentry) : "x0");
             #endif
