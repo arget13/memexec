@@ -1,6 +1,6 @@
 /* Compile with -fno-stack-protector -nostdlib */
 #include <elf.h>
-#include <fcntl.h>
+// #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <signal.h>
@@ -15,7 +15,10 @@
     #define SP           "sp"
 #endif
 
-void* load(void*, Elf64_Addr);
+#define O_RDONLY 0
+#define AT_FDCWD -100
+int openat(int fd, const char* path, int flags);
+void* load(void*, Elf64_Addr, int*);
 void loadfile(char*, Elf64_Addr);
 Elf64_Addr search_section(void*, char*);
 Elf64_Addr search_section_file(int, char*);
@@ -34,8 +37,9 @@ int _start()
     Elf64_Addr base;
     uint64_t ldentry, entry, phnum, phentsize, phaddr;
     Elf64_Addr ldbase = 0x40400000;
+    int isstatic;
 
-    int self = open("/proc/self/exe", O_RDONLY);
+    int self = openat(AT_FDCWD, "/proc/self/exe", O_RDONLY);
     interp[pread(self, interp, sizeof(interp) - 1,
                  search_section_file(self, ".interp"))] = '\0';
     close(self);
@@ -68,7 +72,8 @@ int _start()
         if(!clone(SIGCHLD, 0, NULL, NULL, 0))
         {
             elf_addr = read_elf(filesz);
-            base = (Elf64_Addr) load(elf_addr, 0x400000);
+            base = (Elf64_Addr) load(elf_addr, 0x400000, &isstatic);
+            if(isstatic) base = 0;
 
             ldentry   = ((Elf64_Ehdr*) ldbase)  ->e_entry + ldbase;
             entry     = ((Elf64_Ehdr*) elf_addr)->e_entry + base;
@@ -84,15 +89,20 @@ int _start()
 
             if(argc % 2)
                 *--newsp = NULL; // Keep stack aligned
-            auxv[ 0] = 0x06; auxv[ 1] = 0x1000;    // AT_PAGESZ
-            auxv[ 2] = 0x19; auxv[ 3] = ldentry;   // AT_RANDOM (whatever)
-            auxv[ 4] = 0x09; auxv[ 5] = entry;     // AT_ENTRY
-            auxv[ 6] = 0x07; auxv[ 7] = ldbase;    // AT_BASE
-            auxv[ 8] = 0x05; auxv[ 9] = phnum;     // AT_PHNUM
-            auxv[10] = 0x04; auxv[11] = phentsize; // AT_PHENT
-            auxv[12] = 0x03; auxv[13] = phaddr;    // AT_PHDR
-            auxv[14] =    0; auxv[15] = 0;         // End of auxv
-            newsp -= sizeof(auxv) / sizeof(*auxv); memcpy(newsp, auxv, sizeof(auxv));
+
+            if(!isstatic)
+            {
+                auxv[ 0] = 0x06; auxv[ 1] = 0x1000;    // AT_PAGESZ
+                auxv[ 2] = 0x19; auxv[ 3] = ldentry;   // AT_RANDOM (whatever)
+                auxv[ 4] = 0x09; auxv[ 5] = entry;     // AT_ENTRY
+                auxv[ 6] = 0x07; auxv[ 7] = ldbase;    // AT_BASE
+                auxv[ 8] = 0x05; auxv[ 9] = phnum;     // AT_PHNUM
+                auxv[10] = 0x04; auxv[11] = phentsize; // AT_PHENT
+                auxv[12] = 0x03; auxv[13] = phaddr;    // AT_PHDR
+                auxv[14] =    0; auxv[15] = 0;         // End of auxv
+                newsp -= sizeof(auxv) / sizeof(*auxv);
+                memcpy(newsp, auxv, sizeof(auxv));
+            }
             *--newsp = NULL; // End of envp
             *--newsp = NULL; // End of argv
             newsp -= argc; memcpy(newsp, argv, argc * 8);
@@ -101,7 +111,10 @@ int _start()
             dup2(3, 0);
             register volatile void* sp asm(SP);
             sp = newsp;
-            JMP(ldentry);
+            if(isstatic)
+                JMP(entry);
+            else
+                JMP(ldentry);
             __builtin_unreachable();
         }
         wait4(-1, NULL, 0, NULL);
@@ -110,7 +123,7 @@ int _start()
     exit(0);
 }
 
-void* load(void* elf, Elf64_Addr rebase_pie)
+void* load(void* elf, Elf64_Addr rebase_pie, int* isstatic)
 {
     Elf64_Addr base = 0;
     void* rebase = NULL;
@@ -118,12 +131,15 @@ void* load(void* elf, Elf64_Addr rebase_pie)
     Elf64_Phdr* phdr = elf + ehdr->e_phoff;
     uint16_t phnum = ehdr->e_phnum;
     Elf64_Addr bss = search_section(elf, ".bss");
+    if(isstatic != NULL)
+        *isstatic = 1;
 
     if(ehdr->e_type == ET_DYN) // PIE
         rebase = (void*) rebase_pie;
 
     for(int i = 0; i < phnum; ++i)
     {
+        if(phdr[i].p_type == PT_INTERP && isstatic != NULL) *isstatic = 0;
         if(phdr[i].p_type != PT_LOAD) continue;
 
         uint32_t   flags   = phdr[i].p_flags;
@@ -131,7 +147,7 @@ void* load(void* elf, Elf64_Addr rebase_pie)
         Elf64_Addr vaddr   = phdr[i].p_vaddr;
         uint64_t   filesz  = phdr[i].p_filesz;
         uint64_t   memsz   = phdr[i].p_memsz;
-        Elf64_Addr aligned = vaddr & (~0xfff);
+        Elf64_Addr aligned = vaddr & ~0xfff;
 
         uint32_t prot = ((flags & PF_R) ? PROT_READ  : 0) |
                         ((flags & PF_W) ? PROT_WRITE : 0) |
@@ -159,10 +175,10 @@ void loadfile(char* path, Elf64_Addr rebase)
     uint64_t flen;
     void* addr;
 
-    int f = open(path, O_RDONLY);
-    flen = lseek(f, 0, 2);
+    int f = openat(AT_FDCWD, path, O_RDONLY);
+    flen = lseek(f, 0, SEEK_END);
     addr = mmap(NULL, flen, PROT_READ, MAP_PRIVATE, f, 0);
-    load(addr, rebase);
+    load(addr, rebase, NULL);
     munmap(addr, flen);
     close(f);
 }
@@ -261,25 +277,25 @@ void* alloca(size_t s)
     sp -= s;
     return sp;
 }
-inline size_t strlen(const char* str)
+size_t strlen(const char* str)
 {
     size_t i;
     for(i = 0; str[i]; ++i);
     return i;
 }
-inline int strcmp(const char* str1, const char* str2)
+int strcmp(const char* str1, const char* str2)
 {
     volatile int r;
     for(size_t i = 0; !(r = (str1[i] - str2[i])) && str1[i] && str2[i]; ++i);
     return r;
 }
-inline void* memset(void* p, int c, size_t n)
+void* memset(void* p, int c, size_t n)
 {
     for(volatile size_t i = 0; i < n; ++i)
         ((char*) p)[i] = c;
     return p;
 }
-inline void* memcpy(void* dest, const void* src, size_t n)
+void* memcpy(void* dest, const void* src, size_t n)
 {
     for(volatile size_t i = 0; i < n; ++i)
         ((char*) dest)[i] = ((char*) src)[i];
@@ -302,21 +318,6 @@ int mprotect(void* addr, size_t len, int prot)
     return (long) r;
 }
 inline __attribute__((always_inline))
-int open(const char* path, int flags, ...)
-{
-    register volatile unsigned long nr asm(SYSCALL_NR);
-    register volatile unsigned long a0 asm(SYSCALL_ARG0);
-    register volatile const char*   a1 asm(SYSCALL_ARG1);
-    register volatile unsigned long a2 asm(SYSCALL_ARG2);
-    register volatile unsigned long r  asm(SYSCALL_RET);
-    a1 = path;
-    a2 = flags;
-    a0 = AT_FDCWD;
-    nr = SYS_openat;
-    asm volatile(SYSCALL_INST);
-    return (long) r;
-}
-inline __attribute__((always_inline))
 long lseek(int fd, off_t off, int whence)
 {
     register volatile unsigned long nr asm(SYSCALL_NR);
@@ -328,30 +329,6 @@ long lseek(int fd, off_t off, int whence)
     a2 = whence;
     a0 = fd;
     nr = SYS_lseek;
-    asm volatile(SYSCALL_INST);
-    return r;
-}
-inline __attribute__((always_inline))
-int munmap(void* addr, size_t len)
-{
-    register volatile unsigned long nr asm(SYSCALL_NR);
-    register volatile void*         a0 asm(SYSCALL_ARG0);
-    register volatile unsigned long a1 asm(SYSCALL_ARG1);
-    register volatile unsigned long r  asm(SYSCALL_RET);
-    a1 = len;
-    a0 = addr;
-    nr = SYS_munmap;
-    asm volatile(SYSCALL_INST);
-    return (long) r;
-}
-inline __attribute__((always_inline))
-int close(int fd)
-{
-    register volatile unsigned long nr asm(SYSCALL_NR);
-    register volatile unsigned long a0 asm(SYSCALL_ARG0);
-    register volatile unsigned long r  asm(SYSCALL_RET);
-    a0 = fd;
-    nr = SYS_close;
     asm volatile(SYSCALL_INST);
     return r;
 }
@@ -441,6 +418,27 @@ pid_t getppid()
     return r;
 }
 
+NAKED
+int openat(int fd, const char* path, int flags)
+{
+    register volatile unsigned long nr asm(SYSCALL_NR);
+    nr = SYS_openat;
+    asm volatile(SYSCALL_INST NAKED_RET);
+}
+NAKED
+int close(int fd)
+{
+    register volatile unsigned long nr asm(SYSCALL_NR);
+    nr = SYS_close;
+    asm volatile(SYSCALL_INST NAKED_RET);
+}
+NAKED
+int munmap(void* addr, size_t len)
+{
+    register volatile unsigned long nr asm(SYSCALL_NR);
+    nr = SYS_munmap;
+    asm volatile(SYSCALL_INST NAKED_RET);
+}
 NAKED
 void* mmap(void* addr, size_t len, int prot, int flag, int fd, off_t off)
 {
