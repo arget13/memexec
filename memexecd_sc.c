@@ -9,8 +9,10 @@
 
 #if defined(__x86_64__)
     #define JMP(addr) asm volatile("jmp *%0;" : : "r"(addr))
+    #define SP           "rsp"
 #elif defined(__aarch64__)
     #define JMP(addr) asm volatile("br   %0;" : : "r"(addr))
+    #define SP           "sp"
 #endif
 
 void* load(void*, Elf64_Addr);
@@ -97,7 +99,7 @@ int _start()
             *(size_t*) --newsp = argc;
 
             dup2(3, 0);
-            register volatile void* sp asm("sp");
+            register volatile void* sp asm(SP);
             sp = newsp;
             JMP(ldentry);
             __builtin_unreachable();
@@ -250,38 +252,33 @@ void* read_elf(size_t size)
     #define XCHG_RCX_R10
 #endif
 
-#undef alloca
 inline __attribute__((always_inline))
 void* alloca(size_t s)
 {
-    register void* sp asm("sp");
+    register void* sp asm(SP);
     s += 0xf;
     s &= ~0xf;
     sp -= s;
     return sp;
 }
-#undef strlen
 inline size_t strlen(const char* str)
 {
     size_t i;
     for(i = 0; str[i]; ++i);
     return i;
 }
-#undef strcmp
 inline int strcmp(const char* str1, const char* str2)
 {
     volatile int r;
     for(size_t i = 0; !(r = (str1[i] - str2[i])) && str1[i] && str2[i]; ++i);
     return r;
 }
-#undef memset
 inline void* memset(void* p, int c, size_t n)
 {
     for(volatile size_t i = 0; i < n; ++i)
         ((char*) p)[i] = c;
     return p;
 }
-#undef memcpy
 inline void* memcpy(void* dest, const void* src, size_t n)
 {
     for(volatile size_t i = 0; i < n; ++i)
@@ -289,7 +286,6 @@ inline void* memcpy(void* dest, const void* src, size_t n)
     return dest;
 }
 
-#undef mprotect
 inline __attribute__((always_inline))
 int mprotect(void* addr, size_t len, int prot)
 {
@@ -305,7 +301,6 @@ int mprotect(void* addr, size_t len, int prot)
     asm volatile(SYSCALL_INST);
     return (long) r;
 }
-#undef open
 inline __attribute__((always_inline))
 int open(const char* path, int flags, ...)
 {
@@ -321,7 +316,6 @@ int open(const char* path, int flags, ...)
     asm volatile(SYSCALL_INST);
     return (long) r;
 }
-#undef lseek
 inline __attribute__((always_inline))
 long lseek(int fd, off_t off, int whence)
 {
@@ -337,7 +331,6 @@ long lseek(int fd, off_t off, int whence)
     asm volatile(SYSCALL_INST);
     return r;
 }
-#undef munmap
 inline __attribute__((always_inline))
 int munmap(void* addr, size_t len)
 {
@@ -351,19 +344,17 @@ int munmap(void* addr, size_t len)
     asm volatile(SYSCALL_INST);
     return (long) r;
 }
-#undef close
 inline __attribute__((always_inline))
 int close(int fd)
 {
     register volatile unsigned long nr asm(SYSCALL_NR);
     register volatile unsigned long a0 asm(SYSCALL_ARG0);
     register volatile unsigned long r  asm(SYSCALL_RET);
-    nr = SYS_close;
     a0 = fd;
+    nr = SYS_close;
     asm volatile(SYSCALL_INST);
     return r;
 }
-#undef dup2
 inline __attribute__((always_inline))
 int dup2(int fd1, int fd2)
 {
@@ -379,7 +370,6 @@ int dup2(int fd1, int fd2)
     asm volatile(SYSCALL_INST);
     return r;
 }
-#undef kill
 inline __attribute__((always_inline))
 int kill(pid_t pid, int sig)
 {
@@ -393,7 +383,6 @@ int kill(pid_t pid, int sig)
     asm volatile(SYSCALL_INST);
     return r;
 }
-#undef wait4
 inline __attribute__((always_inline))
 int wait4(pid_t pid, int* wstatus, int options, void* rusage)
 {
@@ -411,7 +400,6 @@ int wait4(pid_t pid, int* wstatus, int options, void* rusage)
     asm volatile(SYSCALL_INST);
     return r;
 }
-#undef clone
 inline __attribute__((always_inline))
 int clone(unsigned long a, unsigned long b, int* c, int* d, unsigned long e)
 {
@@ -431,7 +419,6 @@ int clone(unsigned long a, unsigned long b, int* c, int* d, unsigned long e)
     asm volatile(SYSCALL_INST);
     return r;
 }
-#undef exit
 inline __attribute__((always_inline))
 void exit(int s)
 {
@@ -443,7 +430,6 @@ void exit(int s)
     asm volatile(SYSCALL_INST);
     __builtin_unreachable();
 }
-#undef getppid
 inline __attribute__((always_inline))
 pid_t getppid()
 {
@@ -455,7 +441,6 @@ pid_t getppid()
     return r;
 }
 
-#undef mmap
 NAKED
 void* mmap(void* addr, size_t len, int prot, int flag, int fd, off_t off)
 {
@@ -464,7 +449,6 @@ void* mmap(void* addr, size_t len, int prot, int flag, int fd, off_t off)
     nr = SYS_mmap;
     asm volatile(SYSCALL_INST NAKED_RET);
 }
-#undef read
 NAKED
 ssize_t read(int fd, void* addr, size_t count)
 {
@@ -472,7 +456,6 @@ ssize_t read(int fd, void* addr, size_t count)
     nr = SYS_read;
     asm volatile(SYSCALL_INST NAKED_RET);
 }
-#undef pread
 NAKED
 ssize_t pread(int fd, void* addr, size_t count, off_t off)
 {
