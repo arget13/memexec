@@ -17,33 +17,40 @@
 
 #define O_RDONLY 0
 #define AT_FDCWD -100
-int openat(int fd, const char* path, int flags);
-void* load(void*, Elf64_Addr, int*);
-void loadfile(char*, Elf64_Addr);
-Elf64_Addr search_section(void*, char*);
-Elf64_Addr search_section_file(int, char*);
-void* read_elf(size_t);
+int        openat(int, const char*, int);
+void*      load(void*, Elf64_Addr, int*);
+Elf64_Addr search_section(void*, char*, int);
+void*      read_elf(size_t);
+void*      map_file(const char*, size_t*);
+void       alloca_free(size_t);
 
 int clone(unsigned long, unsigned long, int*, int*, unsigned long);
 int wait4(pid_t, int*, int, void*);
 
+#define IS_PIE    (1 << 0)
+#define IS_STATIC (1 << 1)
+
+#define AUXV_ENTRIES 8
+#define PIE_BASE     0x400000
+#define LD_BASE      0x40400000 // 1GiB distance wrt binary
+
 int _start()
 {
-    uint64_t auxv[8 * 2];
-    char interp[128];
+    Elf64_auxv_t* auxv;
     char* stack;
     void** newsp;
-    void* elf_addr;
-    Elf64_Addr base;
+    Elf64_Addr base, ldbase;
     uint64_t ldentry, entry, phnum, phentsize, phaddr;
-    Elf64_Addr ldbase = 0x40400000;
-    int isstatic;
+    int info;
+    void* elf_addr, * self_addr;
+    size_t flen, self_flen;
+    off_t off = 0;
 
-    int self = openat(AT_FDCWD, "/proc/self/exe", O_RDONLY);
-    interp[pread(self, interp, sizeof(interp) - 1,
-                 search_section_file(self, ".interp"))] = '\0';
-    close(self);
-    loadfile(interp, ldbase);
+    self_addr = map_file("/proc/self/exe", &flen);
+    elf_addr  = map_file(self_addr + search_section(self_addr, ".interp", 1), &flen);
+    ldbase    = (Elf64_Addr) load(elf_addr, LD_BASE, NULL);
+    munmap(self_addr, self_flen);
+    munmap(elf_addr , flen);
 
     int filesz;
     int argsz;
@@ -71,75 +78,79 @@ int _start()
 
         if(!clone(SIGCHLD, 0, NULL, NULL, 0))
         {
-            elf_addr = read_elf(filesz);
-            base = (Elf64_Addr) load(elf_addr, 0x400000, &isstatic);
-            if(isstatic) base = 0;
-
-            ldentry   = ((Elf64_Ehdr*) ldbase)  ->e_entry + ldbase;
-            entry     = ((Elf64_Ehdr*) elf_addr)->e_entry + base;
+            elf_addr  = read_elf(filesz);
+            base      = (Elf64_Addr) load(elf_addr, PIE_BASE, &info);
+            ldentry   = ((Elf64_Ehdr*) ldbase  )->e_entry + ldbase;
+            entry     = ((Elf64_Ehdr*) elf_addr)->e_entry + base * !!(info & IS_PIE);
             phnum     = ((Elf64_Ehdr*) elf_addr)->e_phnum;
             phentsize = ((Elf64_Ehdr*) elf_addr)->e_phentsize;
             phaddr    = ((Elf64_Ehdr*) elf_addr)->e_phoff + base;
             munmap(elf_addr, filesz);
 
             stack = (void*) mmap(NULL, 0x21000, PROT_READ | PROT_WRITE,
-                                    MAP_ANONYMOUS | MAP_PRIVATE | MAP_STACK, -1, 0);
+                                 MAP_ANONYMOUS | MAP_PRIVATE | MAP_STACK, -1, 0);
             newsp = (void**) &stack[0x21000];
             *--newsp = NULL; // End of stack
 
             if(argc % 2)
                 *--newsp = NULL; // Keep stack aligned
 
-            if(!isstatic)
-            {
-                auxv[ 0] = 0x06; auxv[ 1] = 0x1000;    // AT_PAGESZ
-                auxv[ 2] = 0x19; auxv[ 3] = ldentry;   // AT_RANDOM (whatever)
-                auxv[ 4] = 0x09; auxv[ 5] = entry;     // AT_ENTRY
-                auxv[ 6] = 0x07; auxv[ 7] = ldbase;    // AT_BASE
-                auxv[ 8] = 0x05; auxv[ 9] = phnum;     // AT_PHNUM
-                auxv[10] = 0x04; auxv[11] = phentsize; // AT_PHENT
-                auxv[12] = 0x03; auxv[13] = phaddr;    // AT_PHDR
-                auxv[14] =    0; auxv[15] = 0;         // End of auxv
-                newsp -= sizeof(auxv) / sizeof(*auxv);
-                memcpy(newsp, auxv, sizeof(auxv));
-            }
+            i = 0;
+            newsp -= sizeof(*auxv) * AUXV_ENTRIES;
+            auxv = (Elf64_auxv_t*) newsp;
+            auxv[i].a_type = AT_PAGESZ; auxv[i++].a_un.a_val = 0x1000;
+            auxv[i].a_type = AT_RANDOM; auxv[i++].a_un.a_val = entry;
+            auxv[i].a_type = AT_ENTRY ; auxv[i++].a_un.a_val = entry;
+            auxv[i].a_type = AT_BASE  ; auxv[i++].a_un.a_val = ldbase * !(info & IS_STATIC);
+            auxv[i].a_type = AT_PHNUM ; auxv[i++].a_un.a_val = phnum;
+            auxv[i].a_type = AT_PHENT ; auxv[i++].a_un.a_val = phentsize;
+            auxv[i].a_type = AT_PHDR  ; auxv[i++].a_un.a_val = phaddr;
+            auxv[i].a_type = AT_NULL  ; auxv[i++].a_un.a_val = 0;
             *--newsp = NULL; // End of envp
             *--newsp = NULL; // End of argv
-            newsp -= argc; memcpy(newsp, argv, argc * 8);
+            newsp -= argc; memcpy(newsp, argv, argc * sizeof(*argv));
             *(size_t*) --newsp = argc;
 
             dup2(3, 0);
             register volatile void* sp asm(SP);
             sp = newsp;
-            if(isstatic)
+            if(info & IS_STATIC)
                 JMP(entry);
             else
                 JMP(ldentry);
             __builtin_unreachable();
         }
+        // Without this we may eventually run out of stack
+        // alloca() isn't magic ;)
+        alloca_free(argsz);
+        alloca_free(sizeof(void*) * (argc + 1));
+
         wait4(-1, NULL, 0, NULL);
         kill(getppid(), SIGCONT);
     }
     exit(0);
 }
 
-void* load(void* elf, Elf64_Addr rebase_pie, int* isstatic)
+void* load(void* elf, Elf64_Addr rebase_pie, int* info)
 {
     Elf64_Addr base = 0;
     void* rebase = NULL;
     Elf64_Ehdr* ehdr = elf;
     Elf64_Phdr* phdr = elf + ehdr->e_phoff;
     uint16_t phnum = ehdr->e_phnum;
-    Elf64_Addr bss = search_section(elf, ".bss");
-    if(isstatic != NULL)
-        *isstatic = 1;
+    Elf64_Addr bss = search_section(elf, ".bss", 0);
+    if(info != NULL)
+        *info |= IS_STATIC;
 
     if(ehdr->e_type == ET_DYN) // PIE
+    {
+        if(info != NULL) *info |= IS_PIE;
         rebase = (void*) rebase_pie;
+    }
 
     for(int i = 0; i < phnum; ++i)
     {
-        if(phdr[i].p_type == PT_INTERP && isstatic != NULL) *isstatic = 0;
+        if(phdr[i].p_type == PT_INTERP && info != NULL) *info &= ~IS_STATIC;
         if(phdr[i].p_type != PT_LOAD) continue;
 
         uint32_t   flags   = phdr[i].p_flags;
@@ -170,20 +181,19 @@ void* load(void* elf, Elf64_Addr rebase_pie, int* isstatic)
     return rebase + base;
 }
 
-void loadfile(char* path, Elf64_Addr rebase)
+void* map_file(const char* path, size_t* sz)
 {
-    uint64_t flen;
+    int f;
     void* addr;
 
-    int f = openat(AT_FDCWD, path, O_RDONLY);
-    flen = lseek(f, 0, SEEK_END);
-    addr = mmap(NULL, flen, PROT_READ, MAP_PRIVATE, f, 0);
-    load(addr, rebase, NULL);
-    munmap(addr, flen);
+    f = openat(AT_FDCWD, path, O_RDONLY);
+    *sz = lseek(f, 0, SEEK_END);
+    addr = mmap(NULL, *sz, PROT_READ, MAP_PRIVATE, f, 0);
     close(f);
+    return addr;
 }
 
-Elf64_Addr search_section(void* elf, char* section)
+Elf64_Addr search_section(void* elf, char* section, int offset)
 {
     Elf64_Ehdr* ehdr = elf;
     Elf64_Shdr* shdr = elf + ehdr->e_shoff;
@@ -193,31 +203,11 @@ Elf64_Addr search_section(void* elf, char* section)
 
     for(int i = 0; i < shnum; ++i)
         if(!strcmp(&shstrtab[shdr[i].sh_name], section))
+        {
+            if(offset)
+                return shdr[i].sh_offset;
             return shdr[i].sh_addr;
-    return 0;
-}
-
-Elf64_Addr search_section_file(int f, char* section)
-{
-    Elf64_Ehdr ehdr;
-    Elf64_Shdr* shdr;
-    uint16_t shnum;
-    uint16_t shstrndx;
-    char* shstrtab;
-
-    pread(f, &ehdr, sizeof(ehdr), 0);
-    shnum = ehdr.e_shnum;
-    shdr = alloca(sizeof(*shdr) * shnum);
-    shstrndx = ehdr.e_shstrndx;
-    pread(f, shdr, sizeof(*shdr) * shnum, ehdr.e_shoff);
-
-    shstrtab = alloca(shdr[shstrndx].sh_size);
-    pread(f, shstrtab, shdr[shstrndx].sh_size, shdr[shstrndx].sh_offset);
-
-    for(int i = 0; i < shnum; ++i)
-        if(!strcmp(&shstrtab[shdr[i].sh_name], section))
-            return shdr[i].sh_offset;
-
+        }
     return 0;
 }
 
@@ -276,6 +266,14 @@ void* alloca(size_t s)
     s &= ~0xf;
     sp -= s;
     return sp;
+}
+inline __attribute__((always_inline))
+void alloca_free(size_t s)
+{
+    register void* sp asm(SP);
+    s += 0xf;
+    s &= ~0xf;
+    sp += s;
 }
 size_t strlen(const char* str)
 {
