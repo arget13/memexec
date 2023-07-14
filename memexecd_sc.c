@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Used to jump to the loader after loading the ELF & setting the stack so it loads and run the ELF
 #if defined(__x86_64__)
     #define JMP(addr) asm volatile("jmp *%0;" : : "r"(addr))
     #define SP           "rsp"
@@ -46,6 +47,8 @@ int _start()
     size_t flen, self_flen;
     off_t off = 0;
 
+    // Read the interpreter path (dynamic loader) from the .interp section of the ELF file
+    // and load it in ldbase
     self_addr = map_file("/proc/self/exe", &flen);
     elf_addr  = map_file(self_addr + search_section(self_addr, ".interp", 1), &flen);
     ldbase    = (Elf64_Addr) load(elf_addr, LD_BASE, NULL);
@@ -54,13 +57,16 @@ int _start()
 
     int filesz;
     int argsz;
+    // Starting listening for binaries to load
     while(read(0, &argsz, sizeof(int)) == sizeof(int))
     {
+        // The first data is the length of the arguments
         char** argv, *args;
         char* p;
         int argc, i;
         if(argsz != 0)
         {
+            // If arguments, load them
             args = alloca(argsz);
             memset(args, '\0', argsz);
             read(0, args, argsz);
@@ -78,8 +84,12 @@ int _start()
 
         if(!clone(SIGCHLD, 0, NULL, NULL, 0))
         {
+            // Store the raw ELF in memory
             elf_addr  = read_elf(filesz);
+            // Properly load the ELF in memory with its headers
             base      = (Elf64_Addr) load(elf_addr, PIE_BASE, &info);
+            
+            // Extract necessary information from the ELF header to load & run it
             ldentry   = ((Elf64_Ehdr*) ldbase  )->e_entry + ldbase;
             entry     = ((Elf64_Ehdr*) elf_addr)->e_entry + base * !!(info & IS_PIE);
             phnum     = ((Elf64_Ehdr*) elf_addr)->e_phnum;
@@ -87,11 +97,13 @@ int _start()
             phaddr    = ((Elf64_Ehdr*) elf_addr)->e_phoff + base;
             munmap(elf_addr, filesz);
 
+            // Allocate stack for the new process
             stack = (void*) mmap(NULL, 0x21000, PROT_READ | PROT_WRITE,
                                  MAP_ANONYMOUS | MAP_PRIVATE | MAP_STACK, -1, 0);
             newsp = (void**) &stack[0x21000];
             *--newsp = NULL; // End of stack
 
+            // Prepare auxiliary vector to call the dynamic loader to load the new ELF
             if(argc % 2)
                 *--newsp = NULL; // Keep stack aligned
 
@@ -111,9 +123,11 @@ int _start()
             newsp -= argc; memcpy(newsp, argv, argc * sizeof(*argv));
             *(size_t*) --newsp = argc;
 
+            // Set the stack pointer to the new stack and jump to the dynamic loader
             dup2(3, 0);
             register volatile void* sp asm(SP);
             sp = newsp;
+            // If static jump to the entry point, if PIE, jump to the loader
             if(info & IS_STATIC)
                 JMP(entry);
             else
@@ -125,12 +139,15 @@ int _start()
         alloca_free(argsz);
         alloca_free(sizeof(void*) * (argc + 1));
 
+        // Parent process waits for the child to finish and send a signal to wake up the parent process (in case it was stopped to leave stdin to the child)
         wait4(-1, NULL, 0, NULL);
         kill(getppid(), SIGCONT);
     }
     exit(0);
 }
 
+// This function receives the address of a raw ELF in memory and a rebase addr and loads the ELF into the expected memory location
+// It also loads all the headers in their offsets with the needed permissions
 void* load(void* elf, Elf64_Addr rebase_pie, int* info)
 {
     Elf64_Addr base = 0;
@@ -142,17 +159,23 @@ void* load(void* elf, Elf64_Addr rebase_pie, int* info)
     if(info != NULL)
         *info |= IS_STATIC;
 
+    // If the ELF file is position-independent (PIE), set the rebase address to the indicated
     if(ehdr->e_type == ET_DYN) // PIE
     {
         if(info != NULL) *info |= IS_PIE;
         rebase = (void*) rebase_pie;
     }
 
+    // Loop over each program header
     for(int i = 0; i < phnum; ++i)
     {
+        // Identify if the ELF is static or dynamic
         if(phdr[i].p_type == PT_INTERP && info != NULL) *info &= ~IS_STATIC;
+
+        // If the program header is not of type PT_LOAD, skip it
         if(phdr[i].p_type != PT_LOAD) continue;
 
+        // Extract necessary information from the header to load it
         uint32_t   flags   = phdr[i].p_flags;
         Elf64_Off  offset  = phdr[i].p_offset;
         Elf64_Addr vaddr   = phdr[i].p_vaddr;
@@ -160,27 +183,36 @@ void* load(void* elf, Elf64_Addr rebase_pie, int* info)
         uint64_t   memsz   = phdr[i].p_memsz;
         Elf64_Addr aligned = vaddr & ~0xfff;
 
+        // Convert the ELF permissions to mmap permissions
         uint32_t prot = ((flags & PF_R) ? PROT_READ  : 0) |
                         ((flags & PF_W) ? PROT_WRITE : 0) |
                         ((flags & PF_X) ? PROT_EXEC  : 0);
 
+        // Adjust the file size and memory size for alignment
         filesz += vaddr - aligned;
         memsz  += vaddr - aligned;
         offset -= vaddr - aligned;
+
+        // Map the segment into memory
         mmap(rebase + aligned, memsz, PROT_READ | PROT_WRITE,
              MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
+        
+        // If this is the first segment, set the base address
         if(offset == 0) base = aligned;
 
+        // If the .bss section is within this segment, adjust the file size
         if(bss != 0 && (bss >= aligned && bss < (aligned + filesz)))
             filesz = bss - aligned;
+        
+        // Copy the segment from the ELF file to the memory map & set the permissions
         memcpy(rebase + aligned, elf + offset, filesz);
-
         mprotect(rebase + aligned, filesz, prot);
     }
 
     return rebase + base;
 }
 
+// This function receives the fs path of an ELF and a rebase addr and loads the ELF into memory
 void* map_file(const char* path, size_t* sz)
 {
     int f;
@@ -193,15 +225,20 @@ void* map_file(const char* path, size_t* sz)
     return addr;
 }
 
+// Given the address of a raw ELF in memory and the name of a section, return the address of that section
 Elf64_Addr search_section(void* elf, char* section, int offset)
 {
     Elf64_Ehdr* ehdr = elf;
     Elf64_Shdr* shdr = elf + ehdr->e_shoff;
     uint16_t shnum = ehdr->e_shnum;
     uint16_t shstrndx = ehdr->e_shstrndx;
+
+    // Get the section header string table, which holds the names of the sections
     char* shstrtab = elf + shdr[shstrndx].sh_offset;
 
+    // Loop over each section header
     for(int i = 0; i < shnum; ++i)
+        // If the name of the section matches the requested section, return its address
         if(!strcmp(&shstrtab[shdr[i].sh_name], section))
         {
             if(offset)
@@ -211,19 +248,26 @@ Elf64_Addr search_section(void* elf, char* section, int offset)
     return 0;
 }
 
+// Given the size of an ELF file, read it from standard input into a buffer in memory
 void* read_elf(size_t size)
 {
     size_t r = 0, idx = 0;
+    // Allocate a buffer in memory to hold the ELF file
     uint8_t* addr = (void*) mmap(NULL, size, PROT_READ | PROT_WRITE,
                                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    
+    // Loop until the entire file has been read into the buffer (to avoid underflow: Reading faster than writing the file in the FD)
     do
     {
+        // Read from standard input into the buffer
+        // The number of bytes to read is the remaining size of the file
         r = read(0, &addr[idx], size);
         idx  += r;
         size -= r;
     }
     while(size);
 
+    // Return the buffer containing the ELF file
     return addr;
 }
 
