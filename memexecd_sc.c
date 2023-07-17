@@ -9,13 +9,13 @@
 
 #if defined(__x86_64__)
     #define JMP(addr) asm volatile("jmp *%0;" : : "r"(addr))
-    #define SP           "rsp"
+    #define SP        "rsp"
 #elif defined(__aarch64__)
     #define JMP(addr) asm volatile("br   %0;" : : "r"(addr))
-    #define SP           "sp"
+    #define SP        "sp"
 #endif
 
-void*      load(void*, Elf64_Addr, int*);
+void*      load(void*, void*, int*);
 Elf64_Addr search_section(void*, char*, int);
 void*      read_elf(size_t);
 void*      map_file(const char*, size_t*);
@@ -45,12 +45,11 @@ int _start()
     size_t flen, self_flen;
     off_t off = 0;
 
-    // Get the interpreter path from our process's legit ELF file
-    // and load it in ldbase
+    // Get the interpreter path from our process's legit ELF file and load it
     self_addr = map_file("/proc/self/exe", &self_flen);
     elf_addr  = map_file(self_addr + search_section(self_addr, ".interp",
                                                     SECTION_OFFSET), &flen);
-    ldbase    = (Elf64_Addr) load(elf_addr, LD_BASE, NULL);
+    ldbase    = (Elf64_Addr) load(elf_addr, (void*) LD_BASE, NULL);
     munmap(self_addr, self_flen);
     munmap(elf_addr , flen);
 
@@ -84,9 +83,8 @@ int _start()
         read(0, &filesz, sizeof(filesz));
         if(!clone(SIGCHLD, 0, NULL, NULL, 0))
         {
-            // Read the ELF raw in memory and properly load it
             elf_addr  = read_elf(filesz);
-            base      = (Elf64_Addr) load(elf_addr, PIE_BASE, &info);
+            base      = (Elf64_Addr) load(elf_addr, (void*) PIE_BASE, &info);
             
             ldentry   = ((Elf64_Ehdr*) ldbase  )->e_entry + ldbase;
             entry     = ((Elf64_Ehdr*) elf_addr)->e_entry + base * !!(info & IS_PIE);
@@ -95,14 +93,14 @@ int _start()
             phaddr    = ((Elf64_Ehdr*) elf_addr)->e_phoff + base;
             munmap(elf_addr, filesz);
 
-            // Allocate stack for the "new" process
+            // Allocate new stack for the
             stack = (void*) mmap(NULL, 0x21000, PROT_READ | PROT_WRITE,
                                  MAP_ANONYMOUS | MAP_PRIVATE | MAP_STACK, -1, 0);
             newsp = (void**) &stack[0x21000];
             *--newsp = NULL; // End of stack
 
             if(argc % 2)
-                *--newsp = NULL; // Keep stack aligned (orders from SystemV)
+                *--newsp = NULL; // Keep stack aligned
 
             i = 0;
             newsp -= AUXV_ENTRIES * 2;
@@ -123,7 +121,6 @@ int _start()
             dup2(3, 0);
             register volatile void* sp asm(SP);
             sp = newsp;
-            // If static jump to the entry point, if PIE, jump to the loader
             if(info & IS_STATIC)
                 JMP(entry);
             else
@@ -143,10 +140,9 @@ int _start()
     exit(0);
 }
 
-void* load(void* elf, Elf64_Addr rebase_pie, int* info)
+void* load(void* elf, void* rebase, int* info)
 {
     Elf64_Addr base = 0;
-    void* rebase = NULL;
     Elf64_Ehdr* ehdr = elf;
     Elf64_Phdr* phdr = elf + ehdr->e_phoff;
     uint16_t phnum = ehdr->e_phnum;
@@ -157,8 +153,9 @@ void* load(void* elf, Elf64_Addr rebase_pie, int* info)
     if(ehdr->e_type == ET_DYN) // PIE
     {
         if(info != NULL) *info |= IS_PIE;
-        rebase = (void*) rebase_pie;
     }
+    else // Almost a dangling "else" kek
+        rebase = NULL;
 
     for(int i = 0; i < phnum; ++i)
     {
@@ -173,7 +170,7 @@ void* load(void* elf, Elf64_Addr rebase_pie, int* info)
         Elf64_Addr aligned = vaddr & ~0xfff;
 
         // Convert the ELF permissions to mmap permissions
-        // (why is this necessary, again?)
+        // (hum why was this necessary?)
         uint32_t prot = ((flags & PF_R) ? PROT_READ  : 0) |
                         ((flags & PF_W) ? PROT_WRITE : 0) |
                         ((flags & PF_X) ? PROT_EXEC  : 0);
@@ -186,18 +183,16 @@ void* load(void* elf, Elf64_Addr rebase_pie, int* info)
         mmap(rebase + aligned, memsz, PROT_READ | PROT_WRITE,
              MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
         
-        // If this is the first segment, we now know the base address
         if(offset == 0) base = aligned;
 
-        // Copy entire pages (the kernel does it this way)
+        // Populate entire pages (the kernel does it this way)
         filesz = (filesz + 0xfff) & ~0xfff;
 
-        // If the .bss section is within this segment, adjust the size
+        // If the .bss section is within this segment adjust the size
         // we copy from the file to keep it (the bss) initialized to NULL's
         if(bss != 0 && (bss >= aligned && bss < (aligned + filesz)))
             filesz = bss - aligned;
         
-        // Copy the segment from the ELF file & set permissions
         memcpy(rebase + aligned, elf + offset, filesz);
         mprotect(rebase + aligned, filesz, prot);
     }
