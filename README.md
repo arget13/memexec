@@ -1,7 +1,5 @@
 # memexec
 
-[At the moment this is just a proof of concept.]
-
 `memexecd.c` is the code for the "daemonized" [DDexec](https://github.com/arget13/DDexec). This program *listens* on a pipe for requests, which are composed of:
 - Size of arguments.
 - Arguments (separated by nullbytes).
