@@ -55,20 +55,20 @@ int _start()
 
     int filesz;
     int argsz;
-    while(read(0, &argsz, sizeof(argsz)) == sizeof(argsz))
+    while (read(0, &argsz, sizeof(argsz)) == sizeof(argsz))
     {
         char** argv, *args;
         char* p;
         int argc = 1, i;
-        if(argsz != 0)
+        if (argsz != 0)
         {
             args = alloca(argsz);
             memset(args, '\0', argsz);
             read(0, args, argsz);
-            for(p = args; (p += strlen(p) + 1) < &args[argsz]; ++argc);
+            for (p = args; (p += strlen(p) + 1) < &args[argsz]; ++argc);
 
             argv = alloca(sizeof(void*) * (argc + 1));
-            for(i = 0, p = args; i < argc; ++i)
+            for (i = 0, p = args; i < argc; ++i)
             {
                 argv[i] = p;
                 p += strlen(p) + 1;
@@ -83,7 +83,7 @@ int _start()
         }
 
         read(0, &filesz, sizeof(filesz));
-        if(!clone(SIGCHLD, 0, NULL, NULL, 0))
+        if (!clone(SIGCHLD, 0, NULL, NULL, 0))
         {
             elf_addr  = read_elf(filesz);
             base      = (Elf64_Addr) load(elf_addr, (void*) PIE_BASE, &info);
@@ -101,7 +101,7 @@ int _start()
             newsp = (void**) &stack[0x21000];
             *--newsp = NULL; // End of stack
 
-            if(argc % 2)
+            if (argc % 2)
                 *--newsp = NULL; // Keep stack aligned
 
             uint64_t random[2] = { 42, 42 };
@@ -124,7 +124,7 @@ int _start()
             dup2(3, 0);
             register volatile void* sp asm(SP);
             sp = newsp;
-            if(info & IS_STATIC)
+            if (info & IS_STATIC)
                 JMP(entry);
             else
                 JMP(ldentry);
@@ -150,20 +150,20 @@ void* load(void* elf, void* rebase, int* info)
     Elf64_Phdr* phdr = elf + ehdr->e_phoff;
     uint16_t phnum = ehdr->e_phnum;
     Elf64_Addr bss = search_section(elf, ".bss", SECTION_ADDR);
-    if(info != NULL)
+    if (info != NULL)
         *info = IS_STATIC;
 
-    if(ehdr->e_type == ET_DYN) // PIE
+    if (ehdr->e_type == ET_DYN) // PIE
     {
-        if(info != NULL) *info |= IS_PIE;
+        if (info != NULL) *info |= IS_PIE;
     }
     else // Almost a dangling "else" kek
         rebase = NULL;
 
-    for(int i = 0; i < phnum; ++i)
+    for (int i = 0; i < phnum; ++i)
     {
-        if(info != NULL && phdr[i].p_type == PT_INTERP) *info &= ~IS_STATIC;
-        if(phdr[i].p_type != PT_LOAD) continue;
+        if (info != NULL && phdr[i].p_type == PT_INTERP) *info &= ~IS_STATIC;
+        if (phdr[i].p_type != PT_LOAD) continue;
 
         uint32_t   flags   = phdr[i].p_flags;
         Elf64_Off  offset  = phdr[i].p_offset;
@@ -186,14 +186,14 @@ void* load(void* elf, void* rebase, int* info)
         mmap(rebase + aligned, memsz, PROT_READ | PROT_WRITE,
              MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
         
-        if(offset == 0) base = aligned;
+        if (offset == 0) base = aligned;
 
         // Populate entire pages (the kernel does it this way)
         filesz = (filesz + 0xfff) & ~0xfff;
 
         // If the .bss section is within this segment adjust the size
         // we copy from the file to keep it (the bss) initialized to NULL's
-        if(bss != 0 && (bss >= aligned && bss < (aligned + filesz)))
+        if (bss != 0 && (bss >= aligned && bss < (aligned + filesz)))
             filesz = bss - aligned;
         
         memcpy(rebase + aligned, elf + offset, filesz);
@@ -225,10 +225,10 @@ Elf64_Addr search_section(void* elf, char* section, int offset)
     // The section header string table holds the section names
     char* shstrtab = elf + shdr[shstrndx].sh_offset;
 
-    for(int i = 0; i < shnum; ++i)
-        if(!strcmp(&shstrtab[shdr[i].sh_name], section))
+    for (int i = 0; i < shnum; ++i)
+        if (!strcmp(&shstrtab[shdr[i].sh_name], section))
         {
-            if(offset)
+            if (offset)
                 return shdr[i].sh_offset;
             return shdr[i].sh_addr;
         }
@@ -246,7 +246,7 @@ void* read_elf(size_t size)
         idx  += r;
         size -= r;
     }
-    while(size);
+    while (size);
 
     return addr;
 }
@@ -302,24 +302,24 @@ void alloca_free(size_t s)
 size_t strlen(const char* str)
 {
     size_t i;
-    for(i = 0; str[i]; ++i);
+    for (i = 0; str[i]; ++i);
     return i;
 }
 int strcmp(const char* str1, const char* str2)
 {
     volatile int r;
-    for(size_t i = 0; !(r = (str1[i] - str2[i])) && str1[i] && str2[i]; ++i);
+    for (size_t i = 0; !(r = (str1[i] - str2[i])) && str1[i] && str2[i]; ++i);
     return r;
 }
 void* memset(void* p, int c, size_t n)
 {
-    for(volatile size_t i = 0; i < n; ++i)
+    for (volatile size_t i = 0; i < n; ++i)
         ((char*) p)[i] = c;
     return p;
 }
 void* memcpy(void* dest, const void* src, size_t n)
 {
-    for(volatile size_t i = 0; i < n; ++i)
+    for (volatile size_t i = 0; i < n; ++i)
         ((char*) dest)[i] = ((char*) src)[i];
     return dest;
 }
