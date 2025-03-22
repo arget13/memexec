@@ -76,9 +76,11 @@ int _start()
             argv[argc] = NULL;
         }
         else
-            // The kernel adds an empty argv[0] if none is provided
-            // and some shitty programs rely on this (looking at you busybox)
-            argv = (char**) &(char*[]) { "", NULL };
+        {
+            argv = alloca(0x10);
+            argv[0] = (void*) &argv[1]; // Empty string
+            argv[1] = NULL;
+        }
 
         read(0, &filesz, sizeof(filesz));
         if(!clone(SIGCHLD, 0, NULL, NULL, 0))
