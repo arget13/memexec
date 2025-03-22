@@ -488,11 +488,3 @@ ssize_t read(int fd, void* addr, size_t count)
     nr = SYS_read;
     asm volatile(SYSCALL_INST NAKED_RET);
 }
-NAKED
-ssize_t pread(int fd, void* addr, size_t count, off_t off)
-{
-    register volatile unsigned long nr asm(SYSCALL_NR);
-    XCHG_RCX_R10;
-    nr = SYS_pread64;
-    asm volatile(SYSCALL_INST NAKED_RET);
-}
