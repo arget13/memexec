@@ -104,11 +104,12 @@ int _start()
             if(argc % 2)
                 *--newsp = NULL; // Keep stack aligned
 
+            uint64_t random[2] = { 42, 42 };
             i = 0;
             newsp -= AUXV_ENTRIES * 2;
             auxv = (Elf64_auxv_t*) newsp;
             auxv[i].a_type = AT_PAGESZ; auxv[i++].a_un.a_val = 0x1000;
-            auxv[i].a_type = AT_RANDOM; auxv[i++].a_un.a_val = entry;
+            auxv[i].a_type = AT_RANDOM; auxv[i++].a_un.a_val = (long) random;
             auxv[i].a_type = AT_ENTRY ; auxv[i++].a_un.a_val = entry;
             auxv[i].a_type = AT_BASE  ; auxv[i++].a_un.a_val = ldbase * !(info & IS_STATIC);
             auxv[i].a_type = AT_PHNUM ; auxv[i++].a_un.a_val = phnum;
