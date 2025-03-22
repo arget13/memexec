@@ -47,15 +47,13 @@ _start:
 	mov x8, 0x39 // SYS_close
 	svc 0
 
-	// With all probability the function to which we are returning has saved
-	// its return address to the stack, right..? Right? -- Yes, don't worry
-	ldr x30, [x7, data.retaddr]
+	ldr x16, [x7, data.retaddr]
 
 	ldp x7, x8, [sp], 0x10
 	ldp x2, x3, [sp], 0x10
 	ldp x0, x1, [sp], 0x10
 
-	ret
+	br  x16
 
 load: // Load memexecd in the child
     mov x0, 0
