@@ -151,7 +151,7 @@ void* load(void* elf, void* rebase, int* info)
     uint16_t phnum = ehdr->e_phnum;
     Elf64_Addr bss = search_section(elf, ".bss", SECTION_ADDR);
     if(info != NULL)
-        *info |= IS_STATIC;
+        *info = IS_STATIC;
 
     if(ehdr->e_type == ET_DYN) // PIE
     {
